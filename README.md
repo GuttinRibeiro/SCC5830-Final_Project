@@ -30,28 +30,36 @@ As imagens foram obtidas do repositório https://github.com/chuhuaxian/HF-RGBD. 
 
 ![depthNorm](https://user-images.githubusercontent.com/31515305/120489234-dc5fc100-c38d-11eb-9d61-808ae1ffbcc6.png)
 
-## Etapas e métodos a serem utilizados
+## Etapas e métodos utilizados
 
-O problema proposto é um exemplo de aplicação de redes neurais convolucionais. Com relação à arquitetura dessas redes, o problema é um exemplo em que redes auto-codificadoras podem ser utilizadas, uma vez que a saída esperada é uma reconstrução da entrada fornecida. Além disso, o cenário proposto também é um exemplo de situação em que o modelo desenvolvido busca realizar uma regressão, já que o objetivo é calcular o valor de profundidade para cada pixel. Para isso, é possível utilizar como função de perda a ser minimizada o erro quadrático médio. Entretanto, [2] apresenta dois outros componentes a serem minimizados numa tarefa de predição de profundidade que ajudam a obter melhores resultados e que estão relacionados ao contexto da disciplina: os gradientes e a similaridade estrutural.
+O problema proposto é um exemplo de aplicação de redes neurais convolucionais. Com relação à arquitetura dessas redes, o problema é um exemplo em que redes auto-codificadoras podem ser utilizadas, uma vez que a saída esperada é uma reconstrução da entrada fornecida. Além disso, o cenário proposto também é um exemplo de situação em que o modelo desenvolvido busca realizar uma regressão, já que o objetivo é calcular o valor de profundidade para cada pixel. Para isso, é possível utilizar como função de perda a ser minimizada o erro absoluto médio (MAE). Entretanto, [2] apresenta dois outros componentes a serem minimizados numa tarefa de predição de profundidade que ajudam a obter melhores resultados e que estão relacionados ao contexto da disciplina: os gradientes e a similaridade estrutural. Sendo assim, a função de perda utilizada para treinamento é uma composição do MAE com a dissimilaridade estrutural e com a soma da diferença dos gradientes da imagem de profundidade gerada e a imagem de profundidade correta.
 
-Até o momento, um modelo preliminar foi implementado para completar a profundidade utilizando apenas a componente de profundidade da imagem RGB-D como entrada. Foi utilizada uma rede neural convolucional em forma de U e o erro quadrático médio foi minimizado. Apesar disso, maneiras para utilizar a componente RGB estão sendo estudadas e vão desde a possibilidade de estimar a profundidade também a partir da componente RGB [2] e utilizar os valores calculados nas regiões faltantes nas medições do sensor ou utilizar a imagem RGB numa etapa de refinamento dos resultados obtidos pelo modelo inicial (profundidade para profundidade), conforme é feito em [1]. Por fim, dados os resultados preliminares obtidos, o foco recai sobre melhorar a previsão feita para as arestas das imagens. É nessa etapa que podem entrar a similaridade estrutural e o filtro Sobel implementado.
+A fim de priorizar o preenchimento dos buracos e evitar que essas regiões fossem preenchidas apenas com um valor médio que minimizaria o erro global, mas sem apresentar um bom resultado local, o MAE foi ponderado pela transformada da distância. Para isso, foi calculada uma imagem binária a partir da profundidade medida indicando as regiões com buracos. Assim, é obtido um mapa com a distância de dos pixels de cada buraco até a borda, dando mais peso para o centro dessas regiões, como mostrado abaixo.
 
-## Resultados preliminares
+![unnamed](https://user-images.githubusercontent.com/31515305/125619382-2c59f7b5-cab6-4eb7-a85d-2c38357d70d7.png)
+![unnamed2](https://user-images.githubusercontent.com/31515305/125619596-d4f3e92f-117d-4b9c-8740-330722a137fa.png)
 
-O modelo simples apresentado no código foi treinado por apenas 10 épocas de treinamento, já que o projeto ainda está em fase de construção e treinamentos longos acabam consumindo tempo demais até ser possível observar algum resultado promissor. Apenas a título de comparação, o modelo completo e mais elaborado apresentado em [1] foi treinado por 100 épocas neste mesmo conjunto de dados. Sendo assim, por definição, o erro obtido pela estimativa apresentada ainda é muito alto. Até o ponto em que o treinamento foi executado, o erro quadrático médio da previsão era da ordem de 200 mm. Entretanto, já é possível notar que, para o exemplo abaixo, que foi retirado de um conjunto fora do conjunto de treinamento, as regiões faltantes começaram a ser preenchidas e a ordem de grandeza da profundidade dos objetos (cor das poltronas por exemplo) parece mais alinhada com aquela apresentada pelo valor desejado.
+A rede neural empregada é então composta por 5 blocos de codificação e 5 de decodificação. A entrada da sequência de codificação é uma imagem RGB-D (4 canais concatenados) de resolução 384x544x4 e a saída é a imagem de profundidade de resolução 384x544x1. A cada bloco de codificação, o número de canais da imagem é dobrado, enquanto a dimensão espacial é dividida pela metade graças a aplicação de camadas de redução de regiões 2x2 pelo valor médio. São utilizados também, a normalização em lotes e a convolução dos valores da entrada por um filtro de pesos a ser treinado. Todas as funções de ativação empregadas são a LeakyReLU com inclinação igual a -0,01 para valores negativos, a fim de evitar que alguns neurônios parem de atuar caso o valor dos pesos se torne negativo.
 
-#### Imagem colorida da cena: 
-![00378-color](https://user-images.githubusercontent.com/31515305/123012443-a0ba8480-d398-11eb-897d-21e67259b9f6.png)
+Durante a decodificação, as imagens são interpoladas bilinearmente para dobrar as dimensões espaciais do tensor de entrada. Para reduzir pela metade o número de canais, uma convolução 1x1 é aplicada. Além disso, os blocos de decodificação utilizam também a entrada concatenada de blocos anteriores de codificação que possuem as mesmas dimensões espaciais, a fim de propagar melhor detalhes da imagem ao longo da rede. No bloco é ainda aplicada uma convolução 3x3 sem alterar as dimensões da imagem, com a mesma função de ativação citada anteriormente. Esses passos se repetem ao longo dos blocos de decodificação, até que, na última etapa, uma convolução 1x1 restaura a profundidade a partir de um tensor formado pela saída do último bloco de decodificação e pela imagem RGB-D dada como entrada. 
 
-#### Medição de profundidade do sensor:
-![label](https://user-images.githubusercontent.com/31515305/123012465-ab751980-d398-11eb-9f73-77e48d9d175c.png)
+## Resultados
 
-#### Profundidade preenchida pelo modelo preliminar:
-![prediction](https://user-images.githubusercontent.com/31515305/123012477-b039cd80-d398-11eb-9095-8be1119d3adc.png)
+O modelo apresentado no código foi treinado por 70 épocas de treinamento em 90% das tuplas de imagens do conjunto de dados. Na figura abaixo é possível ver os gráficos da função de perda e das suas componentes ao longo do tempo decaírem e atingirem uma região de pouca mudança, sugerindo que, para o cenário proposto, o número de épocas de treinamento empregado é satisfatório.
 
-#### Profundidade verdadeira:
-![índice](https://user-images.githubusercontent.com/31515305/123012478-b2039100-d398-11eb-916b-b9e331110e41.png)
+![Captura de tela 2021-07-14 091056](https://user-images.githubusercontent.com/31515305/125621233-93961a57-b2ba-4aa2-b17d-cf550c8c957f.png)
 
+Com relação aos resultados obtidos, a imagem abaixo mostra a saída para um conjunto de amostras extraído do conjunto de testes. Na primeira linha são mostradas as componentes RGB da entrada, seguidas pelas medições de profundidade na próxima linha. Na terceira linha, aparecem as saídas calculadas pelo modelo, enquanto que as últimas quatro imagens mostram os valores de profundidade assumidos como verdadeiros. Como as imagens de profundidade são normalizadas para o intervalo [0, 255] durante o processo de plotagem, algumas tonalidades podem ser diferentes entre as imagens com e sem buracos.
+
+![grid](https://user-images.githubusercontent.com/31515305/125622657-424132b5-d3e8-4e6c-8233-34290c9997ef.png)
+
+Abaixo são mostrados de forma mais detalhados os resultados para duas outras imagens. Para ambas as cenas, é possível notar que os buracos são preenchidos, mas os contornos não são tão bem definidos quanto aqueles apresentados pela imagem de profundidade verdadeira. Além disso, os limites mostrados de valores de profundidade presentes na cena são diferentes. 
+
+Apesar disso, houve uma redução do MAE entre a imagem de profundidade medida e a completada com relação à profundidade real de 1289,6816 para 78,068855 e de 1687,5479 para 102,43216 na segunda cena. Esses resultados não necessariamente refletem a qualidade do preenchimento, pois são referentes à imagem como um todo e não apenas aos buracos. Também é preciso notar que o simples fato de preencher os buracos com um valor de profundidade médio estimado, sem muita atenção aos detalhes, já seria capaz de reduzir o MAE. Sendo assim, um dos principais desafios deste problema é encontrar a métrica ideal para treinar e avaliar o modelo desenvolvido.
+
+![índice](https://user-images.githubusercontent.com/31515305/125623252-e3daaca6-a7c1-4fe9-a589-b98fe9791a12.png)
+
+![índice2](https://user-images.githubusercontent.com/31515305/125623256-7cfcab1c-f692-48e0-b5cc-76e33f615f87.png)
 
 ## Referências
 [1] Xian, C., Zhang, D., Dai, C., & Wang, C. C. (2020). Fast Generation of High-Fidelity RGB-D Images by Deep Learning With Adaptive Convolution. IEEE Transactions on Automation Science and Engineering. Disponível em https://arxiv.org/abs/2002.05067 
