@@ -1,6 +1,6 @@
-DATASET_FOLDER = 'dataset'
+DATASET_FOLDER = '../dataset'
 WEIGHTS_FOLDER = 'weights'
-OUTPUT_FOLDER = 'outputs'
+OUTPUT_FOLDER = 'outputs100_7rep_correct'
 
 H_START = 63
 H_END = 447

@@ -1,12 +1,14 @@
 from utils import constants
 from utils.tools import *
 import os
+from models import DenseNN
+from scipy.ndimage import distance_transform_edt
 
-import matplotlib.pyplot as plt
-import cv2
-from skimage.util import img_as_uint
+# import matplotlib.pyplot as plt
+# import cv2
+# from skimage.util import img_as_uint
 
-import time
+# import time
 
 def vector_to_rgb(vector):
     vector = min_max_norm(vector.numpy())
@@ -14,43 +16,39 @@ def vector_to_rgb(vector):
 
 
 if __name__ == '__main__':
-    # Global constants
-    BATCH_SIZE = 1
-
-    # Configure paths and folders to store trained weights and training statistics
-    DATASET_PATH = os.path.join(os.getcwd(), constants.DATASET_FOLDER)
-
-    # Load dataset and split it into two disjoint sets (train and test)
-    dataset = DepthCompletionDataset(DATASET_PATH, 'color', 'depth', 'rawDepth', '.png')
-    train_loader, test_loader = train_test_split(dataset, validation_split=0.0, batch_size=BATCH_SIZE)
-
     # Move model to GPU if available (preferred mode)
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     print('Selected device: ', device)
 
-    for data in train_loader:
-        color, raw, depth = data
-        
-        # plt.subplot(221)
-        # plt.imshow(raw[0, 0].numpy())
+    model = DenseNN().to(device)
+    print(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    model.load_state_dict(torch.load(os.path.join(constants.WEIGHTS_FOLDER, 'torch_weights_final_obs2.pth')))
+    model.eval()
+    # Global constants
+    BATCH_SIZE = 4
 
-        # n = normals(raw)
-        # plt.subplot(222)
-        # plt.imshow(np.transpose(vector_to_rgb(n[0]), axes=(1, 2, 0)))
-        # # cv2.imwrite('raw.tif', cv2.cvtColor(img_as_uint(np.transpose(n[0].numpy(), axes=(1, 2, 0))), cv2.COLOR_RGB2BGR))
+    # Configure paths and folders to store trained weights and training statistics
+    DATASET_PATH = os.path.join(os.getcwd(), constants.DATASET_FOLDER)
+    dataset = DepthCompletionDataset(DATASET_PATH, 'color', 'depth', 'rawDepth', '.png')
+    _, test_loader = train_test_split(dataset, validation_split=0.1, batch_size=BATCH_SIZE)
 
-        # plt.subplot(223)
-        # plt.imshow(depth[0, 0].numpy())
+    for _, data in enumerate(test_loader):
+        colors, inputs, labels = data
+        colors, inputs, labels = colors.to(device), inputs.to(device), labels.to(device)
+        inputs_concat = torch.cat([colors, inputs], dim=1)
 
-        # plt.subplot(224)
-        # plt.imshow(np.transpose(vector_to_rgb(normals(depth)[0]), axes=(1, 2, 0)))
-        # # cv2.imwrite('depth.tif', cv2.cvtColor(img_as_uint(np.transpose(normals(depth)[0].numpy(), axes=(1, 2, 0))), cv2.COLOR_RGB2BGR))
+        outputs = model(inputs_concat)
 
-        # plt.show()
+        mask = torch.eq(inputs, 0)
+        weights = torch.from_numpy((distance_transform_edt(mask.to('cpu')))*10+1).to(device)
 
-        # tic = time.time()
-        edges = canny_edge_detector(color)[0].numpy()
-        # toc = time.time()
-        # print(toc-tic)
-        plt.imshow(edges, cmap='gray')
-        plt.show()
+        outputs_w = torch.mul(outputs, weights).float()
+        labels_w = torch.mul(labels, weights).float()
+
+        s1 = ssim(outputs, labels, 11, 7500.0).mean(1).mean(1).mean(1).cpu()
+        # s2 = ssim(outputs_w, labels, 11, 7500.0).mean(1).mean(1).mean(1).cpu()
+        s3 = ssim(outputs_w, labels_w, 11, 7500.0).mean(1).mean(1).mean(1).cpu()
+
+        print('SSIM inicial: ', s1)
+        # print('SSIM ponderando entrada: ', s2)
+        print('SSIM ponderando ambas: ', s3)

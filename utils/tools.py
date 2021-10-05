@@ -5,14 +5,44 @@ import numpy as np
 import os
 import cv2
 
+def get_file_lists(dataset_folder, file_extension='.png', img_token='color', depth_token='depth', raw_token='rawDepth'):
+  image_files = []
+  depth_files = []
+  rawDepth_files = []
+
+  for img in os.listdir(dataset_folder):
+    if ('-'+str(img_token)+file_extension) in img:
+      image_files.append(img)
+    elif ('-'+str(depth_token)+file_extension) in img:
+      depth_files.append(img)
+    elif ('-'+str(raw_token)+file_extension) in img:
+      rawDepth_files.append(img)
+
+  image_files = np.sort(image_files)
+  depth_files = np.sort(depth_files)
+  rawDepth_files = np.sort(rawDepth_files)
+
+  return image_files, rawDepth_files, depth_files
+
+def split_set_indices(file_list, split_ratio, shuffle=True, random_seed=42):
+  dataset_size = len(file_list)
+  indices = list(range(dataset_size))
+  split = int(np.floor(split_ratio * dataset_size))
+  if shuffle:
+    np.random.seed(random_seed)
+    np.random.shuffle(indices)
+
+  train, val = indices[split:], indices[:split]
+  return train, val
+
 class RandomChannelSwap(object):
   def __init__(self, probability=0.5):
     from itertools import permutations
-    self.probability = probability
+    self.p = probability
     self.indices = list(permutations(range(3), 3))
 
   def __call__(self, img):
-    if np.random.random() < self.probability:
+    if np.random.random() < self.p:
         img = img[..., list(self.indices[np.random.randint(0, len(self.indices) - 1)])]
     return img
 
@@ -22,12 +52,70 @@ class RandomHorizontalFlip(object):
     self.p = probability
 
   def __call__(self, img, raw, ground_truth):
-    if np.random.random() < self.probability:
+    if np.random.random() < self.p:
       img = self.flipper(img)
       raw = self.flipper(raw)
       ground_truth = self.flipper(ground_truth)
 
     return img, raw, ground_truth
+
+class RGBDCompletionDataset(torch.utils.data.Dataset):
+  def __init__(self, color_images_files, raw_depth_files, ground_truth_files, image_dir, crop_images=True, apply_augmentation=False):
+    assert len(color_images_files) == len(raw_depth_files) == len(ground_truth_files)
+    self.img_dir = image_dir
+    self.color = color_images_files
+    self.raw = raw_depth_files
+    self.depth = ground_truth_files
+
+    if apply_augmentation:
+      # Data augmentations transforms
+      self.hflipper = RandomHorizontalFlip()
+      self.cflipper = RandomChannelSwap()
+
+    self.augmentation = apply_augmentation
+
+    ## Cortar imagens manualmente para que tenham o tamanho aproximados
+    ## da medicao de profundidade e aplicar o operador morfologico de fechamento
+    ## para tapar pequenos buracos (empirismo total aqui)
+    if crop_images:
+        self.h_start = 63
+        self.h_end = 447
+        self.w_start = 47
+        self.w_end = 591
+    else:
+        self.h_start = 0
+        self.h_end = 480
+        self.w_start = 0
+        self.w_end = 640
+
+  def __len__(self):
+    return len(self.color)
+
+  def __getitem__(self, idx):
+    assert idx < self.__len__()
+
+    image_filename = os.path.join(self.img_dir, self.color[idx])
+    depth_filename = os.path.join(self.img_dir, self.depth[idx])
+    rawDepth_filename = os.path.join(self.img_dir, self.raw[idx])
+
+    np_image = np.array(imageio.imread(image_filename)).astype(np.float32)
+    np_image = np_image[self.h_start:self.h_end, self.w_start:self.w_end, :]
+    np_depth = np.array(imageio.imread(depth_filename)).astype(np.float32)
+    np_depth = np_depth[self.h_start:self.h_end, self.w_start:self.w_end]
+    np_rawDepth = np.array(imageio.imread(rawDepth_filename)).astype(np.float32)
+    np_rawDepth = np_rawDepth[self.h_start:self.h_end, self.w_start:self.w_end]
+
+    if self.augmentation:
+      np_image = self.cflipper(np_image)
+
+    image = torch.from_numpy(np.transpose(np_image, axes=(2, 0, 1)))
+    depth = torch.from_numpy(np.expand_dims(np_depth, axis=0))
+    rawDepth = torch.from_numpy(np.expand_dims(np_rawDepth, axis=0))
+
+    if self.augmentation:
+      image, rawDepth, depth = self.hflipper(image, rawDepth, depth)
+
+    return image.float(), rawDepth.float(), depth.float()
 
 class DepthCompletionDataset(torch.utils.data.Dataset):
   def __init__(self, img_dir, img_token, depth_token, raw_token, file_extension, crop_images=True):
@@ -56,7 +144,7 @@ class DepthCompletionDataset(torch.utils.data.Dataset):
     self.rawDepth_files = np.sort(self.rawDepth_files)
 
     ## Cortar imagens manualmente para que tenham o tamanho aproximados
-    ## da medição de profundidade e aplicar o operador morfológico de fechamento
+    ## da medicao de profundidade e aplicar o operador morfologico de fechamento
     ## para tapar pequenos buracos (empirismo total aqui)
     if crop_images:
         self.h_start = 63
@@ -92,9 +180,9 @@ class DepthCompletionDataset(torch.utils.data.Dataset):
     np_rawDepth = np.array(imageio.imread(rawDepth_filename)).astype(np.float32)
     np_rawDepth = np_rawDepth[self.h_start:self.h_end, self.w_start:self.w_end]
 
-    # Perform data augmentation
-    np_image = self.cflipper(np_image)
-    np_image, np_rawDepth, np_depth = self.hflipper(np_image, np_rawDepth, np_depth)
+    # # Perform data augmentation
+    # np_image = self.cflipper(np_image)
+    # np_image, np_rawDepth, np_depth = self.hflipper(np_image, np_rawDepth, np_depth)
 
     image = torch.from_numpy(np.transpose(np_image, axes=(2, 0, 1)))
     depth = torch.from_numpy(np.expand_dims(np_depth, axis=0))
@@ -115,39 +203,72 @@ def train_test_split(dataset, validation_split, batch_size, shuffle_dataset=True
   valid_sampler = torch.utils.data.SubsetRandomSampler(val_indices)
 
   train_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size, 
-                                            sampler=train_sampler, shuffle=True)
+                                            sampler=train_sampler, shuffle=False)
   validation_loader = torch.utils.data.DataLoader(dataset, batch_size=batch_size,
-                                                  sampler=valid_sampler, shuffle=True)
+                                                  sampler=valid_sampler, shuffle=False)
 
   return train_loader, validation_loader
 
 def min_max_norm(img, scale_factor=255):
   return scale_factor*(img-np.min(img))/(np.max(img)-np.min(img))
 
-def MAE(output, label):
+def MAE(output, label, mask=None):
   t1 = output.cpu().detach().numpy()
   t2 = label.cpu().detach().numpy()
+  if mask != None:
+    t_mask = mask.cpu().detach().numpy()
+    t1 = t1[t_mask]
+    t2 = t2[t_mask]
   return np.abs(t1-t2).mean()
 
-def RMSE(output, label):
+def RMSE(output, label, mask=None):
   t1 = output.cpu().detach().numpy()
   t2 = label.cpu().detach().numpy()
+  if mask != None:
+    t_mask = mask.cpu().detach().numpy()
+    t1 = t1[t_mask]
+    t2 = t2[t_mask]
   return np.sqrt(np.square(t1-t2).mean())
 
-def RelativeError(output, label):
+def threshold(output, label, threshold, mask=None):
+  y = np.squeeze(output.cpu().detach().numpy())
+  y_star = np.squeeze(label.cpu().detach().numpy())
+  if mask != None:
+    t_mask = np.squeeze(mask.cpu().detach().numpy())
+    y = y[t_mask]
+    y_star = y_star[t_mask]
+
+  # Calculate delta
+  delta = np.maximum(y/y_star, y_star/y)
+
+  # Apply constrain
+  constrain = delta < threshold
+
+  # Count the percentage of true values in maks
+  if mask == None:
+    n = constrain.shape[0]*constrain.shape[1]
+  else:
+    n = constrain.shape
+  return 100*(np.sum(constrain)/(n))
+
+def RelativeError(output, label, mask=None):
   t1 = output.cpu().detach().numpy()
   t2 = label.cpu().detach().numpy()
+  if mask != None:
+    t_mask = mask.cpu().detach().numpy()
+    t1 = t1[t_mask]
+    t2 = t2[t_mask]
   return (np.abs(t1-t2)/t2).mean()
 
 def img_gradients(img):
   device = 'cuda' if img.is_cuda else 'cpu'
   _, channel, h, w = img.shape
 
-  # Filtro Sobel para a direção x:
+  # Filtro Sobel para a direcao x:
   kernel_x = torch.from_numpy(np.array([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]])).to(device).unsqueeze(0).expand(1, channel, -1, -1).float() # possivelmente errado. Deveria ser (channel, channel/groups, -1, -1)
   gx = torch.nn.functional.conv2d(img, kernel_x, padding=1)
 
-  # Filtro Sobel para a direção y:
+  # Filtro Sobel para a direcao y:
   kernel_y = torch.from_numpy(np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])).to(device).unsqueeze(0).expand(1, channel, -1, -1).float() # possivelmente errado. Deveria ser (channel, channel/groups, -1, -1)
   gy = torch.nn.functional.conv2d(img, kernel_y, padding=1)
 
@@ -246,7 +367,7 @@ def canny_edge_detector(batch, sigma=1.0):
   gray = RGBtoGray(batch)
   ret = torch.zeros(gray.shape, dtype=torch.float)
   for i in range(batch_size):
-    edges = 1-cv2.Canny(gray[i].numpy().astype(np.uint8), 100, 200).astype(np.float32)/255.0
+    edges = 1-cv2.Canny(gray[i].cpu().numpy().astype(np.uint8), 100, 200).astype(np.float32)/255.0
     ret[i] = torch.from_numpy(edges)
   
   return ret.to(device)

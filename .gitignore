@@ -1,3 +1,9 @@
+# Pastas e arquivos de saída
+weights/
+Results/
+outputs*/
+*.txt
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
